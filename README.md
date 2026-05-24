@@ -12,8 +12,9 @@
 4. [Cara Pakai di Script Sendiri](#4-cara-pakai-di-script-sendiri)
 5. [Cara Pakai dengan Groq LLM](#5-cara-pakai-dengan-groq-llm)
 6. [Evaluasi ML (Baseline vs AUDA)](#6-evaluasi-ml-baseline-vs-auda)
-7. [Penjelasan Laporan](#7-penjelasan-laporan)
-8. [Komponen Library](#8-komponen-library)
+7. [Web Interface (Gradio)](#7-web-interface-gradio)
+8. [Penjelasan Laporan](#8-penjelasan-laporan)
+9. [Komponen Library](#9-komponen-library)
 
 ---
 
@@ -322,7 +323,74 @@ python -m examples.ml_evaluation
 
 ---
 
-## 7. Penjelasan Laporan
+## 7. Web Interface (Gradio)
+
+Selain dijalankan via terminal, AUDA tersedia sebagai **web interface interaktif** menggunakan Gradio.
+User dapat upload CSV, pilih kolom target, dan langsung melihat hasil EDA + perbandingan ML di browser.
+
+### Fitur Web Interface
+
+| Fitur | Keterangan |
+|-------|------------|
+| Upload CSV | Drag & drop file `.csv` sendiri |
+| Dataset sintetis | Tombol untuk langsung coba tanpa upload |
+| Preview dataset | Tabel pratinjau 8 baris pertama |
+| EDA Report | Profiling, missing value handling, anomaly detection |
+| Feature Recommendations | Saran transformasi per kolom |
+| ML Evaluation | Tabel Baseline vs AUDA vs Delta |
+| Bar chart | Visualisasi perbandingan skor (Accuracy, F1, ROC-AUC) |
+| Delta chart | Visualisasi selisih AUDA - Baseline per metrik |
+
+### Cara Menjalankan
+
+#### Langkah 1 — Pastikan sudah di folder yang benar
+
+```powershell
+cd "c:\Kuliah\SEM 6\BIGDATA\final-project"
+```
+
+#### Langkah 2 — Install dependency (jika belum)
+
+```powershell
+pip install -r requirements.txt
+```
+
+#### Langkah 3 — Jalankan Gradio app
+
+```powershell
+python app.py
+```
+
+#### Langkah 4 — Buka di browser
+
+Setelah dijalankan, terminal akan menampilkan:
+
+```
+Running on local URL:  http://127.0.0.1:7860
+```
+
+Buka URL tersebut di browser. Gradio juga bisa diakses dari perangkat lain di jaringan yang sama dengan URL yang ditampilkan di baris `Running on local URL`.
+
+### Cara Pakai
+
+1. **Upload CSV** — drag & drop file CSV kamu, atau klik **Use Synthetic Dataset** untuk langsung coba
+2. **Lihat preview** — tabel 8 baris pertama muncul otomatis
+3. **Pilih target column** — dropdown otomatis terisi kolom dari dataset
+4. **Klik Run Analysis** — tunggu beberapa detik
+5. **Lihat hasil** di 3 tab:
+   - **EDA Report** — profiling, missing value handling, anomaly detection
+   - **Feature Recommendations** — saran transformasi per kolom
+   - **ML Evaluation** — tabel metrik + 2 grafik perbandingan
+
+### Catatan
+
+- Dataset harus berformat **CSV**
+- Kolom target harus berupa **klasifikasi** (binary atau multiclass dengan ≤20 kelas unik)
+- Untuk dataset sangat besar (>100K baris), proses mungkin memakan waktu 30–60 detik
+
+---
+
+## 8. Penjelasan Laporan
 
 Laporan AUDA terdiri dari 4 bagian:
 
@@ -381,7 +449,7 @@ Saran transformasi fitur per kolom:
 
 ---
 
-## 8. Komponen Library
+## 9. Komponen Library
 
 | Class | Fungsi |
 |---|---|

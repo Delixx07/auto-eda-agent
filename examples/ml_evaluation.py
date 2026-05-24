@@ -19,11 +19,11 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier # type: ignore
-from sklearn.impute import SimpleImputer # type: ignore
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score # type: ignore
-from sklearn.model_selection import train_test_split # type: ignore
-from sklearn.preprocessing import OrdinalEncoder # type: ignore
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OrdinalEncoder 
 
 from auto_eda_agent import AUDA, FeatureTransformer
 from auto_eda_agent.profiler import DataProfiler
@@ -98,7 +98,6 @@ def preprocess_baseline(
     X_train = X_train.copy()
     X_test  = X_test.copy()
 
-    # Drop high-missing columns (tiruan threshold AUDA)
     miss_frac  = X_train.isnull().mean()
     drop_cols  = miss_frac[miss_frac >= 0.6].index.tolist()
     X_train    = X_train.drop(columns=drop_cols)
@@ -107,13 +106,11 @@ def preprocess_baseline(
     num_cols = X_train.select_dtypes(include="number").columns.tolist()
     cat_cols = X_train.select_dtypes(exclude="number").columns.tolist()
 
-    # Impute numeric -> mean
     if num_cols:
         num_imp = SimpleImputer(strategy="mean")
         X_train[num_cols] = num_imp.fit_transform(X_train[num_cols])
         X_test[num_cols]  = num_imp.transform(X_test[num_cols])
 
-    # Impute categorical -> most_frequent
     if cat_cols:
         cat_imp = SimpleImputer(strategy="most_frequent")
         X_train[cat_cols] = cat_imp.fit_transform(X_train[cat_cols])
@@ -135,11 +132,9 @@ def preprocess_auda(
       3. Align test set dengan kolom & statistik training (no data leakage)
       4. Encode categoricals dengan OrdinalEncoder
     """
-    # Gabungkan X_train + y agar row-drop AUDA tetap selaras
     df_train = X_train.copy()
     df_train["__target__"] = y_train.values
 
-    # ---- Tahap 1: AUDA pipeline (impute, drop) ----
     agent = AUDA(df_train, verbose=False)
     agent.run_full_pipeline()
     cleaned = agent.cleaned_df_
@@ -147,11 +142,9 @@ def preprocess_auda(
     X_train_clean = cleaned.drop(columns=["__target__"])
     y_train_clean = cleaned["__target__"].astype(int)
 
-    # Sesuaikan test set: ambil hanya kolom yang masih ada
     keep_cols = [c for c in X_train_clean.columns if c in X_test.columns]
     X_test_aligned = X_test[keep_cols].copy()
 
-    # Isi NaN sisa di test dengan statistik training (tanpa data leakage)
     num_cols = X_train_clean.select_dtypes(include="number").columns
     cat_cols = X_train_clean.select_dtypes(exclude="number").columns
 
@@ -164,9 +157,6 @@ def preprocess_auda(
             fill_val = mode_val.iloc[0] if len(mode_val) > 0 else "Unknown"
             X_test_aligned[col] = X_test_aligned[col].fillna(fill_val)
 
-    # ---- Tahap 2: FeatureTransformer pada SELURUH dataset ----
-    # Akan drop kolom kardinalitas tinggi (Name/Ticket/PassengerId),
-    # cap outlier (k=5, mild), log1p untuk skewed positive
     profiler_full = DataProfiler(X_train_clean)
     profiler_full.detect_column_types()
 
@@ -178,7 +168,6 @@ def preprocess_auda(
     X_train_t = transformer.fit_transform()
     X_test_t  = transformer.transform(X_test_aligned)
 
-    # ---- Tahap 4: Encode categoricals ----
     X_tr, X_te = _encode_categoricals(X_train_t.copy(), X_test_t.copy())
     return X_tr, y_train_clean, X_te
 
@@ -278,13 +267,11 @@ def run_evaluation(df: pd.DataFrame, target_col: str) -> None:
     X = df.drop(columns=[target_col])
     y = df[target_col]
 
-    # Split (sama persis untuk kedua pendekatan)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     print(f"\nTrain/Test     : {len(X_train)} / {len(X_test)}")
 
-    # --- Baseline ---
     print("\n[1/2] Baseline preprocessing ...")
     X_tr_b, X_te_b = preprocess_baseline(X_train, X_test)
     metrics_base = evaluate(X_tr_b, y_train, X_te_b, y_test, "Baseline")
@@ -293,7 +280,6 @@ def run_evaluation(df: pd.DataFrame, target_col: str) -> None:
           f"AUC={metrics_base['roc_auc']:.4f}  "
           f"(train={metrics_base['train_samples']})")
 
-    # --- AUDA ---
     print("\n[2/2] AUDA pipeline ...")
     X_tr_a, y_tr_a, X_te_a = preprocess_auda(X_train, y_train, X_test)
     metrics_auda = evaluate(X_tr_a, y_tr_a, X_te_a, y_test, "AUDA")
@@ -302,7 +288,6 @@ def run_evaluation(df: pd.DataFrame, target_col: str) -> None:
           f"AUC={metrics_auda['roc_auc']:.4f}  "
           f"(train={metrics_auda['train_samples']})")
 
-    # --- Comparison ---
     print_comparison(metrics_base, metrics_auda)
 
 
@@ -312,12 +297,12 @@ def main() -> None:
     # ---------------------------------------------------------------
 
     # Pilihan A: pakai dataset sintetis bawaan (default)
-    # df = build_dataset_with_target(n=800, seed=42)
-    # target_col = "will_churn"
+    df = build_dataset_with_target(n=800, seed=42)
+    target_col = "will_churn"
 
     # Pilihan B: pakai file CSV sendiri -> hapus tanda # di bawah ini
-    df = pd.read_csv("train.csv")
-    target_col = "Survived"
+    # df = pd.read_csv("train.csv")
+    # target_col = "Survived"
 
     # Pilihan C: pakai dataset Titanic dari seaborn -> hapus tanda # di bawah ini
     # import seaborn as sns
