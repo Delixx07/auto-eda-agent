@@ -1,4 +1,4 @@
-"""Apply feature transformations: outlier capping, log1p for skew, scaling."""
+"""Apply smart feature transformations to improve downstream ML."""
 
 from __future__ import annotations
 
@@ -17,30 +17,37 @@ logger = setup_logger(__name__)
 class FeatureTransformer:
     """Apply automatic feature transformations to improve downstream ML.
 
-    Transformations applied in order:
+    Strategy (in order):
 
-    1. **Drop zero-variance columns** — ``nunique == 1``.
+    1. **Drop zero-variance columns** — ``nunique <= 1``.
     2. **Drop near-constant categoricals** — top value > 95 %.
-    3. **Cap outliers** using IQR fence with multiplier ``iqr_k`` (default 3.0).
-    4. **Apply log1p** to right-skewed positive numeric columns
-       (skewness > ``skew_threshold`` and all values >= 0).
-    5. **Standardise** numeric columns (``StandardScaler``).
+    3. **Drop pure-ID columns** — numeric with ``nunique == n_rows`` (e.g. ``PassengerId``).
+    4. **Frequency-encode high-cardinality categoricals** — replace the raw
+       value with its training-set count. Preserves signal that pure ordinal
+       encoding throws away (e.g. ``Name``, ``Ticket``).
+    5. **Cap outliers** using IQR fence ``iqr_k`` (default ``5.0`` — mild).
+    6. **Apply log1p** to right-skewed positive numeric columns
+       (``skew > skew_threshold`` and all values >= 0).
+    7. **Standardise** numeric columns (optional, default off).
 
-    The transformer remembers the parameters fitted on training data so that
-    :meth:`transform` can apply the same transformation to test data without
-    data leakage.
+    Fitted parameters are remembered so :meth:`transform` can apply the same
+    transformation to test data without data leakage.
 
     Args:
         data: Input data accepted by
             :func:`~auto_eda_agent.utils.validate_dataframe`.
         profiler: Optional pre-built :class:`~auto_eda_agent.profiler.DataProfiler`.
         skew_threshold: Skewness above which log1p is applied (default: ``1.0``).
-        iqr_k: IQR fence multiplier for outlier capping (default: ``3.0``).
-        scale: Whether to apply StandardScaler to numeric columns
+        iqr_k: IQR fence multiplier for outlier capping (default: ``5.0``).
+        scale: Apply ``StandardScaler`` to numeric columns (default: ``False``).
+        frequency_encode_threshold: Cardinality above which categoricals are
+            frequency-encoded instead of left for one-hot/ordinal downstream
+            (default: ``20``).
+        drop_pure_id: Drop numeric columns where ``nunique == n_rows``
             (default: ``True``).
 
     Attributes:
-        transformations_: Human-readable log of applied transformations.
+        transformations_: Human-readable log of applied steps.
     """
 
     def __init__(
@@ -48,15 +55,17 @@ class FeatureTransformer:
         data: Any,
         profiler: Optional[DataProfiler] = None,
         skew_threshold: float = 1.0,
-        iqr_k: float = 3.0,
+        iqr_k: float = 5.0,
         scale: bool = False,
-        drop_high_cardinality: int = 50,
+        frequency_encode_threshold: int = 20,
+        drop_pure_id: bool = True,
     ) -> None:
         self.df_: pd.DataFrame = validate_dataframe(data)
         self.skew_threshold = skew_threshold
         self.iqr_k = iqr_k
         self.scale = scale
-        self.drop_high_cardinality = drop_high_cardinality
+        self.frequency_encode_threshold = frequency_encode_threshold
+        self.drop_pure_id = drop_pure_id
 
         if profiler is not None:
             self._profiler = profiler
@@ -66,6 +75,7 @@ class FeatureTransformer:
 
         self.transformations_: list[str] = []
         self._dropped_cols: list[str] = []
+        self._freq_maps: dict[str, dict[Any, int]] = {}
         self._iqr_bounds: dict[str, tuple[float, float]] = {}
         self._log_cols: list[str] = []
         self._scalers: dict[str, StandardScaler] = {}
@@ -75,15 +85,13 @@ class FeatureTransformer:
     # ------------------------------------------------------------------
 
     def fit_transform(self) -> pd.DataFrame:
-        """Fit the transformer on training data and return the transformed result.
-
-        Returns:
-            Transformed :class:`pandas.DataFrame`.
-        """
+        """Fit the transformer on training data and return the transformed result."""
         df = self.df_.copy()
         column_types = self._profiler.column_types_
         if not column_types:
             column_types = self._profiler.detect_column_types()
+
+        n_rows = len(df)
 
         # --- 1. Drop zero-variance columns ---
         for col in list(df.columns):
@@ -113,51 +121,84 @@ class FeatureTransformer:
                     f"Dropped '{col}' (near-constant, top freq={top_freq:.1%})"
                 )
 
-        # --- 2b. Drop high-cardinality categoricals / text (noise to ML) ---
-        if self.drop_high_cardinality:
-            n_rows = len(df)
+        # --- 3. Drop pure-ID numeric columns (e.g. PassengerId) ---
+        # Pakai numeric_subtype dari profiler kalau tersedia.
+        numeric_subtypes: dict[str, str] = {}
+        try:
+            numeric_subtypes = self._profiler.get_numeric_subtypes()
+        except Exception:
+            numeric_subtypes = {}
+
+        if self.drop_pure_id:
+            # For small datasets, n_unique == n_rows = pure noise (rows
+            # essentially serve as their own labels). For larger datasets,
+            # only drop if values are sequential (truly an ID column).
+            is_small = n_rows < 500
             for col in list(df.columns):
-                ctype = column_types.get(col)
-                if ctype not in (DataProfiler.CATEGORICAL, DataProfiler.TEXT):
+                if column_types.get(col) != DataProfiler.NUMERIC:
                     continue
-                try:
-                    n_unique = df[col].nunique(dropna=True)
-                except Exception:
-                    continue
-                # Drop kalau kardinalitas tinggi (e.g. nama, ID acak, tiket)
-                if n_unique > self.drop_high_cardinality and (n_unique / n_rows) > 0.3:
+                subtype = numeric_subtypes.get(col)
+
+                # 1) Sequential pure-ID: always drop
+                if subtype == DataProfiler.NUMERIC_ID:
                     df = df.drop(columns=[col])
                     self._dropped_cols.append(col)
                     self.transformations_.append(
-                        f"Dropped '{col}' (high cardinality: nunique={n_unique}, "
-                        f"ratio={n_unique/n_rows:.1%} — likely identifier/free-text)"
+                        f"Dropped '{col}' (sequential pure-ID column)"
                     )
+                    continue
 
-        # --- 2c. Drop high-cardinality numeric IDs (e.g. PassengerId) ---
-        n_rows = len(df)
+                # 2) Small datasets: also drop if n_unique == n_rows
+                if is_small:
+                    try:
+                        n_unique = df[col].nunique(dropna=True)
+                    except Exception:
+                        continue
+                    if n_unique == n_rows and n_rows > 20:
+                        df = df.drop(columns=[col])
+                        self._dropped_cols.append(col)
+                        self.transformations_.append(
+                            f"Dropped '{col}' (small dataset: all "
+                            f"{n_unique} values unique = noise)"
+                        )
+
+        # --- 4. Frequency-encode high-cardinality categoricals ---
+        # Instead of dropping (which loses signal) OR ordinal encoding (which
+        # injects noise on unseen values), replace each value with its count.
         for col in list(df.columns):
-            if column_types.get(col) != DataProfiler.NUMERIC:
+            ctype = column_types.get(col)
+            if ctype not in (DataProfiler.CATEGORICAL, DataProfiler.TEXT):
                 continue
             try:
                 n_unique = df[col].nunique(dropna=True)
             except Exception:
                 continue
-            # Kolom numeric dengan nilai unik = jumlah baris -> ID, bukan fitur
-            if n_unique == n_rows and n_rows > 20:
-                df = df.drop(columns=[col])
-                self._dropped_cols.append(col)
+            if n_unique > self.frequency_encode_threshold:
+                value_counts = df[col].value_counts(dropna=False).to_dict()
+                self._freq_maps[col] = value_counts
+                df[col] = df[col].map(value_counts).fillna(0).astype(float)
                 self.transformations_.append(
-                    f"Dropped '{col}' (numeric ID: {n_unique} unique values = row count)"
+                    f"Frequency-encoded '{col}' (nunique={n_unique})"
                 )
 
-        # --- 3. Cap outliers using IQR ---
+        # --- 5. Cap outliers using IQR (continuous numeric only) ---
+        # Skip ordinal (Likert 1-5) and count columns via numeric_subtype.
         numeric_cols = [
             c for c in df.columns
             if pd.api.types.is_numeric_dtype(df[c])
+            and c not in self._freq_maps     # skip freq-encoded
         ]
         for col in numeric_cols:
+            # Skip if column is known to be ordinal/count/id
+            sub = numeric_subtypes.get(col)
+            if sub in (
+                DataProfiler.NUMERIC_ORDINAL,
+                DataProfiler.NUMERIC_COUNT,
+                DataProfiler.NUMERIC_ID,
+            ):
+                continue
             series = df[col].dropna()
-            if len(series) < 4:
+            if len(series) < 4 or series.nunique() < 20:
                 continue
             q1, q3 = series.quantile(0.25), series.quantile(0.75)
             iqr = q3 - q1
@@ -165,34 +206,47 @@ class FeatureTransformer:
                 continue
             lower = q1 - self.iqr_k * iqr
             upper = q3 + self.iqr_k * iqr
-            self._iqr_bounds[col] = (float(lower), float(upper))
-            n_capped = int(((df[col] < lower) | (df[col] > upper)).sum())
-            if n_capped > 0:
+            n_outliers = int(((df[col] < lower) | (df[col] > upper)).sum())
+            if n_outliers > 0:
+                self._iqr_bounds[col] = (float(lower), float(upper))
                 df[col] = df[col].clip(lower=lower, upper=upper)
                 self.transformations_.append(
-                    f"Capped {n_capped} outlier(s) in '{col}' "
-                    f"using IQR k={self.iqr_k}"
+                    f"Capped {n_outliers} outlier(s) in '{col}' (IQR k={self.iqr_k})"
                 )
 
-        # --- 4. Apply log1p to right-skewed positive columns ---
+        # --- 6. Apply log1p to right-skewed CONTINUOUS columns ---
+        # Skip ordinal/count/id - log doesn't help discrete categories.
         for col in numeric_cols:
             if col not in df.columns:
                 continue
+            sub = numeric_subtypes.get(col)
+            if sub in (
+                DataProfiler.NUMERIC_ORDINAL,
+                DataProfiler.NUMERIC_COUNT,
+                DataProfiler.NUMERIC_ID,
+            ):
+                continue
             series = df[col].dropna()
-            if len(series) < 3:
+            if len(series) < 3 or series.nunique() < 20:
                 continue
             try:
                 skew = float(series.skew())
             except Exception:
                 continue
-            if skew > self.skew_threshold and series.min() >= 0:
-                df[col] = np.log1p(df[col])
+            col_range = float(series.max() - series.min()) if len(series) > 0 else 0.0
+            if (
+                skew > self.skew_threshold
+                and series.min() >= 0
+                and series.max() > 1
+                and col_range > 100
+            ):
+                df[col] = np.log1p(df[col].clip(lower=0))
                 self._log_cols.append(col)
                 self.transformations_.append(
-                    f"Applied log1p to '{col}' (skew={skew:.2f})"
+                    f"Applied log1p to '{col}' (skew={skew:.2f}, range={col_range:.1f})"
                 )
 
-        # --- 5. Standardise numeric columns ---
+        # --- 7. Optional standardisation ---
         if self.scale:
             for col in numeric_cols:
                 if col not in df.columns:
@@ -212,14 +266,7 @@ class FeatureTransformer:
         return df
 
     def transform(self, new_data: Any) -> pd.DataFrame:
-        """Apply the fitted transformations to new data (e.g. test set).
-
-        Args:
-            new_data: Test DataFrame (or anything ``validate_dataframe`` accepts).
-
-        Returns:
-            Transformed :class:`pandas.DataFrame`.
-        """
+        """Apply the fitted transformations to new data (e.g. test set)."""
         df = validate_dataframe(new_data).copy()
 
         # Drop the same columns
@@ -227,17 +274,22 @@ class FeatureTransformer:
         if cols_to_drop:
             df = df.drop(columns=cols_to_drop)
 
+        # Frequency encoding (unseen categories -> 0)
+        for col, freq_map in self._freq_maps.items():
+            if col in df.columns:
+                df[col] = df[col].map(freq_map).fillna(0).astype(float)
+
         # Cap outliers using training bounds
         for col, (lower, upper) in self._iqr_bounds.items():
             if col in df.columns:
                 df[col] = df[col].clip(lower=lower, upper=upper)
 
-        # Apply log1p
+        # log1p
         for col in self._log_cols:
             if col in df.columns:
                 df[col] = np.log1p(df[col].clip(lower=0))
 
-        # Apply scaling
+        # Scaling
         for col, scaler in self._scalers.items():
             if col in df.columns:
                 series = df[col]

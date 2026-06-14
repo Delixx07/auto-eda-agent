@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -234,3 +234,104 @@ class DataProfiler:
         if not self.column_types_:
             self.detect_column_types()
         return [col for col, t in self.column_types_.items() if t == dtype]
+
+    # ------------------------------------------------------------------
+    # Numeric sub-classification
+    # ------------------------------------------------------------------
+
+    # Sub-classes of NUMERIC
+    NUMERIC_CONTINUOUS = "continuous"   # float dengan banyak nilai unik (Age, Income)
+    NUMERIC_ORDINAL    = "ordinal"      # int sedikit nilai (Likert 1-5, Level 1-10)
+    NUMERIC_COUNT      = "count"        # int non-negatif (jumlah, hits)
+    NUMERIC_ID         = "id"           # nilai unik = jumlah baris (PassengerId)
+
+    def numeric_subtype(
+        self,
+        col: str,
+        ordinal_max_unique: int = 10,
+    ) -> Optional[str]:
+        """Sub-classify a numeric column for smarter downstream transforms.
+
+        Returns ``None`` if the column is not numeric. Otherwise returns one of:
+
+        * ``"id"``        — ``nunique == n_rows`` (e.g. ``PassengerId``).
+        * ``"ordinal"``   — integer with few unique values (Likert 1-5, etc).
+        * ``"count"``     — integer, non-negative, max <= 10 % of n_rows.
+        * ``"continuous"`` — float OR int with high cardinality.
+
+        Args:
+            col: Column name to inspect.
+            ordinal_max_unique: Maximum number of unique values for a column to
+                be classified as ``ordinal`` (default: ``10``).
+
+        Returns:
+            Subtype string, or ``None`` if column is not numeric / does not exist.
+        """
+        if not self.column_types_:
+            self.detect_column_types()
+        if col not in self.df_.columns:
+            return None
+        if self.column_types_.get(col) != self.NUMERIC:
+            return None
+
+        series = self.df_[col].dropna()
+        n_rows = len(self.df_)
+        if len(series) == 0:
+            return None
+
+        n_unique = int(series.nunique())
+
+        # Pure ID: unique values == row count AND values look sequential.
+        # Non-sequential unique integers (e.g. EmployeeNumber 1-2068 with
+        # gaps) might encode hire-order signal and should NOT be dropped.
+        if n_unique == n_rows and n_rows > 20:
+            try:
+                sorted_vals = np.sort(series.unique())
+                expected = np.arange(sorted_vals[0], sorted_vals[0] + len(sorted_vals))
+                is_sequential = np.all(np.equal(sorted_vals, expected))
+            except Exception:
+                is_sequential = False
+            if is_sequential:
+                return self.NUMERIC_ID
+            # Fall through — high-cardinality but non-sequential, treat as continuous
+
+        # Integer-like? Check whether values are whole numbers
+        try:
+            is_int_like = bool(pd.api.types.is_integer_dtype(series) or
+                               np.all(np.equal(np.mod(series.values, 1), 0)))
+        except Exception:
+            is_int_like = False
+
+        if is_int_like:
+            # Likert / level / category-as-int
+            if n_unique <= ordinal_max_unique:
+                return self.NUMERIC_ORDINAL
+            # Count: non-negative ints with moderate range
+            try:
+                if series.min() >= 0 and n_unique <= max(50, n_rows * 0.1):
+                    return self.NUMERIC_COUNT
+            except Exception:
+                pass
+
+        # Default: continuous (floats, or ints with high cardinality)
+        return self.NUMERIC_CONTINUOUS
+
+    def get_numeric_subtypes(
+        self,
+        ordinal_max_unique: int = 10,
+    ) -> dict[str, str]:
+        """Return numeric sub-classification for every numeric column.
+
+        Args:
+            ordinal_max_unique: Maximum unique values for ``ordinal`` (default: ``10``).
+
+        Returns:
+            ``{col: subtype}`` only for numeric columns.
+        """
+        if not self.column_types_:
+            self.detect_column_types()
+        return {
+            col: self.numeric_subtype(col, ordinal_max_unique=ordinal_max_unique)
+            for col, t in self.column_types_.items()
+            if t == self.NUMERIC
+        }
