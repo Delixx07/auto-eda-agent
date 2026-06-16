@@ -44,6 +44,11 @@ class AUDA:
         llm_provider: Optional LLM provider for augmented feature
             recommendations. When ``None``, only rule-based recommendations
             are generated.
+        model_type: Hint about the downstream model family — ``"tree"``
+            (default), ``"kernel"``, or ``"linear"``. Stored as
+            :attr:`model_type` and forwarded to
+            :class:`~auto_eda_agent.feature_transformer.FeatureTransformer`
+            when called by the user.
 
     Attributes:
         df_: Validated input :class:`pandas.DataFrame`.
@@ -63,10 +68,12 @@ class AUDA:
         data: Any,
         verbose: bool = True,
         llm_provider: Optional[LLMProvider] = None,
+        model_type: str = "tree",
     ) -> None:
         self.df_: pd.DataFrame = validate_dataframe(data)
         self.verbose = verbose
         self._llm_provider = llm_provider
+        self.model_type = model_type
 
         self._profiler: Optional[DataProfiler] = None
         self.profile_report_: Optional[dict[str, Any]] = None

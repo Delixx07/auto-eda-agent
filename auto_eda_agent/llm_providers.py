@@ -117,6 +117,89 @@ class GroqProvider(LLMProvider):
         return response.choices[0].message.content
 
 
+class GeminiProvider(LLMProvider):
+    """LLM provider backed by Google's Gemini API (Google AI Studio).
+
+    Google AI Studio offers a **free tier** with no credit card required.
+    Get your key at https://aistudio.google.com/apikey
+
+    Recommended models (free tier):
+
+    * ``gemini-2.0-flash`` (**default** — fast, generous free quota)
+    * ``gemini-2.5-flash`` — newer, slightly higher quality
+    * ``gemini-1.5-flash`` — older fallback
+
+    Args:
+        model: Gemini model ID (default: ``"gemini-2.0-flash"``).
+        api_key: Google API key. Falls back to the ``GEMINI_API_KEY`` env
+            variable, then ``GOOGLE_API_KEY``.
+        max_tokens: Maximum tokens in the response (default: ``1024``).
+        temperature: Sampling temperature (default: ``0.2``).
+
+    Raises:
+        ImportError: If the ``google-genai`` package is not installed.
+        ValueError: If no API key is found.
+    """
+
+    name: str = "gemini"
+
+    def __init__(
+        self,
+        model: str = "gemini-2.0-flash",
+        api_key: Optional[str] = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.2,
+    ) -> None:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError as exc:
+            raise ImportError(
+                "The 'google-genai' package is required for GeminiProvider. "
+                "Install it with: pip install google-genai"
+            ) from exc
+
+        resolved_key = (
+            api_key
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+        )
+        if not resolved_key:
+            raise ValueError(
+                "No Gemini API key provided. Pass api_key= or set the "
+                "GEMINI_API_KEY environment variable. "
+                "Get a free key (no credit card) at https://aistudio.google.com/apikey"
+            )
+
+        self.model = model
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._types = types
+        self._client = genai.Client(api_key=resolved_key)
+
+    def complete(self, prompt: str, system: Optional[str] = None) -> str:
+        """Call the Gemini API and return the model's response text.
+
+        Args:
+            prompt: User message.
+            system: Optional system instruction.
+
+        Returns:
+            Response text from the model.
+        """
+        config = self._types.GenerateContentConfig(
+            temperature=self.temperature,
+            max_output_tokens=self.max_tokens,
+            system_instruction=system or None,
+        )
+        response = self._client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=config,
+        )
+        return response.text or ""
+
+
 class MockProvider(LLMProvider):
     """Deterministic mock LLM provider for unit tests and offline demos.
 

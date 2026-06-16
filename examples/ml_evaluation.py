@@ -163,7 +163,7 @@ def preprocess_auda(
     transformer = FeatureTransformer(
         X_train_clean, profiler=profiler_full,
         skew_threshold=1.0, iqr_k=5.0, scale=False,
-        drop_high_cardinality=50,
+        frequency_encode_threshold=50,
     )
     X_train_t = transformer.fit_transform()
     X_test_t  = transformer.transform(X_test_aligned)
