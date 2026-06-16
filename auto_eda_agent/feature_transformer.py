@@ -178,18 +178,26 @@ class FeatureTransformer:
                     )
                     continue
 
-                # 2) Small datasets: also drop if n_unique == n_rows
+                # 2) Small datasets: drop all-unique columns ONLY if they are
+                #    integer-like (plausible IDs). Continuous floats are
+                #    naturally all-unique and are usually the real signal
+                #    (e.g. medical measurements) — never drop those.
                 if is_small:
                     try:
                         n_unique = df[col].nunique(dropna=True)
+                        s = df[col].dropna()
+                        is_int_like = bool(
+                            pd.api.types.is_integer_dtype(s)
+                            or np.all(np.equal(np.mod(s.values, 1), 0))
+                        )
                     except Exception:
                         continue
-                    if n_unique == n_rows and n_rows > 20:
+                    if n_unique == n_rows and n_rows > 20 and is_int_like:
                         df = df.drop(columns=[col])
                         self._dropped_cols.append(col)
                         self.transformations_.append(
                             f"Dropped '{col}' (small dataset: all "
-                            f"{n_unique} values unique = noise)"
+                            f"{n_unique} integer values unique = likely ID)"
                         )
 
         # --- 4. Frequency-encode high-cardinality categoricals ---

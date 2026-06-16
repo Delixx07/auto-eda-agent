@@ -9,6 +9,12 @@ __pycache__/
 build/
 dist/
 
+# Jupyter
+.ipynb_checkpoints/
+
+# Office temp/lock files
+~$*
+
 # Virtual environment
 venv/
 env/

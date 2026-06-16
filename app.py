@@ -6,7 +6,9 @@ Run from the auto-eda-agent/ folder:
 from __future__ import annotations
 
 import io
+import os
 import traceback
+from pathlib import Path
 
 import gradio as gr
 import matplotlib
@@ -24,6 +26,46 @@ from examples.ml_evaluation import (
     preprocess_auda,
     evaluate,
 )
+
+
+# ─────────────────────────── LLM (Gemini) setup ───────────────────────────────
+
+def _load_env(paths=(".env", "../.env")):
+    """Load KEY=VALUE pairs from a .env file into os.environ (no extra deps)."""
+    for path in paths:
+        f = Path(path)
+        if f.exists():
+            for line in f.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            return
+
+
+def _make_llm_provider():
+    """Return (provider, status_message). Gemini preferred, Groq fallback,
+    else None (rule-based only). The provider only powers the AI feature-
+    engineering suggestions shown in the Feature Recommendations tab."""
+    _load_env()
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        try:
+            from auto_eda_agent import GeminiProvider
+            return GeminiProvider(api_key=gemini_key), "Gemini — AI suggestions ON"
+        except Exception as e:
+            return None, f"LLM off (Gemini failed: {e})"
+    groq_key = os.environ.get("GROQ_API_KEY", "").strip()
+    if groq_key:
+        try:
+            from auto_eda_agent import GroqProvider
+            return GroqProvider(api_key=groq_key), "Groq — AI suggestions ON"
+        except Exception as e:
+            return None, f"LLM off (Groq failed: {e})"
+    return None, "LLM off — add GEMINI_API_KEY to .env for AI suggestions"
+
+
+LLM_PROVIDER, LLM_STATUS = _make_llm_provider()
 
 
 # ─────────────────────────── Report Formatters ────────────────────────────────
@@ -105,17 +147,37 @@ def fmt_anomaly(a: dict) -> str:
     return "\n".join(lines)
 
 
-def fmt_features(fr: list) -> str:
+def fmt_features(fr: list, llm_status: str = "") -> str:
+    header = f"**AI mode:** {llm_status}\n\n" if llm_status else ""
     if not fr:
-        return "_No feature recommendations available._"
-    lines = []
+        return header + "_No feature recommendations available._"
+
+    has_llm = any(
+        str(s).startswith("[LLM] ")
+        for item in fr for s in item.get("suggestions", [])
+    )
+    legend = "🤖 = AI-suggested (Gemini) &nbsp;•&nbsp; • = rule-based\n\n" if has_llm else ""
+
+    lines = [header + legend]
     for item in fr:
         col  = item.get("column", "?")
         typ  = item.get("type", "?")
         sugg = item.get("suggestions", [])
         lines.append(f"### `{col}` — {typ}\n")
+
+        meaning = item.get("llm_meaning")
+        if meaning:
+            lines.append(f"> 🤖 **Meaning:** {meaning}\n")
+
         for s in sugg:
-            lines.append(f"- {s}")
+            if str(s).startswith("[LLM] "):
+                lines.append(f"- 🤖 {s[6:]}")
+            else:
+                lines.append(f"- {s}")
+
+        for hint in item.get("llm_domain_hints", []):
+            lines.append(f"- 🤖 _Domain hint:_ {hint}")
+
         lines.append("")
     return "\n".join(lines)
 
@@ -235,11 +297,11 @@ def on_run(df_json: str, target_col: str):
         df = pd.read_json(io.StringIO(df_json), orient="split")
 
         feat_df = df.drop(columns=[target_col], errors="ignore")
-        agent   = AUDA(feat_df, verbose=False)
+        agent   = AUDA(feat_df, verbose=False, llm_provider=LLM_PROVIDER)
         agent.run_full_pipeline()
 
         eda_md  = build_eda_md(agent)
-        feat_md = fmt_features(agent.feature_report_ or [])
+        feat_md = fmt_features(agent.feature_report_ or [], LLM_STATUS)
 
         X = df.drop(columns=[target_col])
         y = df[target_col]
@@ -316,7 +378,8 @@ with gr.Blocks(title="AUDA — Automated EDA") as demo:
     gr.Markdown(
         "# AUDA — Automated EDA & ML Evaluation\n"
         "Upload a CSV dataset or use the built-in synthetic dataset, "
-        "select your target column, and compare **Baseline vs AUDA** preprocessing."
+        "select your target column, and compare **Baseline vs AUDA** preprocessing.\n\n"
+        f"**AI feature suggestions:** {LLM_STATUS}"
     )
 
     with gr.Row():

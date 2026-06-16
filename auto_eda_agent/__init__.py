@@ -13,7 +13,7 @@ from .exceptions import (
 )
 from .feature_recommender import FeatureRecommender
 from .feature_transformer import FeatureTransformer
-from .llm_providers import GroqProvider, LLMProvider, MockProvider
+from .llm_providers import GeminiProvider, GroqProvider, LLMProvider, MockProvider
 from .llm_recommender import LLMFeatureRecommender
 from .missing_handler import MissingValueHandler
 from .profiler import DataProfiler
@@ -32,6 +32,7 @@ __all__ = [
     "LLMFeatureRecommender",
     "LLMProvider",
     "GroqProvider",
+    "GeminiProvider",
     "MockProvider",
     # Exceptions
     "AutoEDAError",
