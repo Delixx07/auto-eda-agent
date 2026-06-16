@@ -336,6 +336,7 @@ def main():
         rf_arr, sv_arr = np.array(rf_deltas), np.array(svm_deltas)
         per_dataset.append({
             "dataset": name,
+            "category": fname.split("/")[0],
             "rf_mean": rf_arr.mean() if len(rf_arr) else np.nan,
             "rf_std": rf_arr.std() if len(rf_arr) else np.nan,
             "rf_seed42": rf_deltas[0] if rf_deltas else np.nan,
@@ -377,6 +378,25 @@ def main():
         print(f"    Single-seed (42) win rate : {s42_winrate:.0f}%   <- what you reported before")
         print(f"    Avg within-dataset std    : ±{res[std_col].dropna().mean():.4f}  (noise level)")
         print(f"    Wilcoxon vs 0             : {p_str}  -> {verdict}")
+
+    # ── Who won: AUDA vs Baseline, by category (mean delta across seeds) ──
+    CAT_ORDER = ["tall", "wide_tall", "small", "wide"]
+    for model, mc in [("RandomForest (RF)", "rf_mean"), ("SVM", "svm_mean")]:
+        print("\n" + "=" * 64)
+        print(f"  WHO WON  —  {model}   (AUDA win = mean delta AUC > 0)")
+        print("=" * 64)
+        print(f"  {'Category':<12}{'AUDA wins':>11}{'Baseline wins':>15}{'Ties':>7}{'Avg dAUC':>12}")
+        tot_a = tot_b = tot_t = 0
+        for cat in CAT_ORDER:
+            sub = res[res["category"] == cat][mc].dropna()
+            if len(sub) == 0:
+                continue
+            a = int((sub > 0).sum()); b = int((sub < 0).sum()); t = int((sub == 0).sum())
+            tot_a += a; tot_b += b; tot_t += t
+            print(f"  {cat.upper():<12}{a:>11}{b:>15}{t:>7}{sub.mean():>+12.4f}")
+        alld = res[mc].dropna()
+        print("  " + "-" * 56)
+        print(f"  {'TOTAL':<12}{tot_a:>11}{tot_b:>15}{tot_t:>7}{alld.mean():>+12.4f}")
 
     print(f"\nTotal runtime: {time.time() - t_start:.0f}s")
     print(f"Saved -> {out_csv}")
