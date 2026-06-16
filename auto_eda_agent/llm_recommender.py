@@ -100,6 +100,7 @@ class LLMFeatureRecommender:
         self.llm_call_count_: int = 0
         self.llm_failure_count_: int = 0
         self.recommendations_: list[dict[str, Any]] = []
+        self._rate_limited: bool = False  # set True on first 429; stops further calls
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -164,6 +165,9 @@ class LLMFeatureRecommender:
         All exceptions are caught. On any failure, ``llm_failure_count_``
         is incremented and ``None`` is returned.
         """
+        if self._rate_limited:
+            return None
+
         sample = self._build_sample(col)
         other_cols = [c for c in self.df_.columns if c != col][:30]
         n_unique = int(self.df_[col].nunique())
@@ -197,12 +201,14 @@ class LLMFeatureRecommender:
             exc_name = type(exc).__name__
             # Provide extra context for Groq rate limits
             if "ratelimit" in exc_name.lower() or "429" in str(exc):
-                logger.warning(
-                    "Groq rate limit hit for column '%s'. "
-                    "Free tier: 30 RPM / 1,000 RPD. "
-                    "Falling back to rule-based for remaining columns.",
-                    col,
-                )
+                if not self._rate_limited:
+                    logger.warning(
+                        "Groq rate limit hit (column '%s'). "
+                        "Free tier: 30 RPM / 1,000 RPD. "
+                        "Switching to rule-based for all remaining columns.",
+                        col,
+                    )
+                self._rate_limited = True
             else:
                 logger.warning(
                     "LLM query failed for column '%s' (%s: %s). "
